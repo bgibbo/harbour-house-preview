@@ -145,7 +145,7 @@ const submit=form.querySelector('button[type="submit"]');
     document.head.append(currentScript);
    };
    document.body.append(frame,transport);
-   timer=setTimeout(()=>{clean();reject(Error('We could not confirm delivery. Please contact us directly before trying again.'))},60000);
+   timer=setTimeout(()=>{clean();reject(Error('We have not received the final status yet. Your enquiry may have been received, so please check your email and contact us before submitting again.'))},60000);
    try{transport.submit();poll()}catch(error){clean();reject(Error('We could not send your enquiry. Please contact us directly.'))}
   });
  }
