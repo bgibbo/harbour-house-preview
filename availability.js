@@ -1,5 +1,4 @@
-/* Replace only provider.load for a live, privacy-filtered availability endpoint.
-   Public payload: date boundaries and busy intervals; never Google credentials or events. */
+/* Public availability is fetched from the read-only, date-only Apps Script endpoint. */
 (function(global){
 'use strict';
 const DAY=86400000;
@@ -15,26 +14,36 @@ function classifyEnquiryStatus(payload,requestId){
  if(payload.status==='failed')return {error:'We could not send your enquiry. Please contact us directly before trying again.'};
  return null;
 }
+function jsonp(url,prefix,timeoutMs=15000){
+ return new Promise((resolve,reject)=>{
+  const callbackName=prefix+(Math.random().toString(16).slice(2)+Math.random().toString(16).slice(2)+Date.now().toString(16)).slice(0,40);
+  const script=document.createElement('script');let timer;
+  const clean=()=>{clearTimeout(timer);delete window[callbackName];script.remove()};
+  window[callbackName]=payload=>{clean();resolve(payload)};
+  script.onerror=()=>{clean();reject(Error('The availability service could not be reached.'))};
+  const requestUrl=new URL(url);requestUrl.searchParams.set('callback',callbackName);requestUrl.searchParams.set('_',String(Date.now()));script.src=requestUrl.href;
+  timer=setTimeout(()=>{clean();reject(Error('The availability service did not respond.'))},timeoutMs);
+  document.head.append(script);
+ });
+}
 const provider={async load({from,to}){
-  const busy=[];const first=new Date(from+'T12:00:00Z'),end=new Date(to+'T12:00:00Z');
-  for(let m=first.getUTCMonth(),y=first.getUTCFullYear();monthDate(y,m)<to;m++){
-    if(m>11){m=0;y++}if(monthDate(y,m)>=to)break;
-    const pattern=(y*12+m)%3;
-    for(const [start,finish] of [[10,14],[21,24+pattern]])busy.push({start:monthDate(y,m,start),end:monthDate(y,m,finish)});
-  }
-  return {mode:'demo',timeZone:'Europe/Dublin',from,to,busy};
+  const endpoint=global.HARBOUR_AVAILABILITY_ENDPOINT||global.HARBOUR_ENQUIRY_ENDPOINT;
+  if(!endpoint||!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(endpoint))throw Error('Live availability is not configured.');
+  const url=new URL(endpoint);url.searchParams.set('action','availability');url.searchParams.set('from',from);url.searchParams.set('to',to);
+  return jsonp(url.href,'__hhAvailability_');
 }};
-function normalize(raw){
-  if(!raw||!['demo','live'].includes(raw.mode)||raw.timeZone!=='Europe/Dublin'||!validDate(raw.from)||!validDate(raw.to)||raw.to<=raw.from||!Array.isArray(raw.busy))throw Error('Invalid availability response');
+function normalize(raw,expected){
+  if(!raw||raw.status!=='ok'||raw.timeZone!=='Europe/Dublin'||!validDate(raw.from)||!validDate(raw.to)||raw.to<=raw.from||!Array.isArray(raw.busy))throw Error('Invalid availability response');
+  if(expected&&(raw.from!==expected.from||raw.to!==expected.to))throw Error('Availability response did not match the requested date range');
   const busy=raw.busy.map(x=>{if(!validDate(x.start)||!validDate(x.end)||x.end<=x.start)throw Error('Invalid blocked interval');return {start:x.start,end:x.end}});
-  return {mode:raw.mode,timeZone:raw.timeZone,from:raw.from,to:raw.to,busy};
+  return {mode:'live',timeZone:raw.timeZone,from:raw.from,to:raw.to,busy};
 }
 const isBusy=(data,date)=>data.busy.some(x=>date>=x.start&&date<x.end);
 function checkStay(data,arrival,departure,today){
   if(!validDate(arrival)||!validDate(departure)||departure<=arrival)return {ok:false,reason:'Departure must be after arrival.'};
   if(arrival<today)return {ok:false,reason:'Choose an arrival from today onwards.'};
   if(!data||arrival<data.from||departure>data.to)return {ok:false,reason:'Availability cannot be checked for those dates. Please contact us.'};
-  if(data.busy.some(x=>arrival<x.end&&departure>x.start))return {ok:false,reason:'Those nights overlap '+(data.mode==='demo'?'sample ':'')+'booked dates. Please choose another stay.'};
+  if(data.busy.some(x=>arrival<x.end&&departure>x.start))return {ok:false,reason:'Those nights overlap booked dates. Please choose another stay.'};
   return {ok:true,nights:Math.round((Date.parse(departure+'T12:00:00Z')-Date.parse(arrival+'T12:00:00Z'))/DAY)};
 }
 global.HarbourAvailability={provider,normalize,checkStay,isBusy,addDays,monthDate,todayDublin,classifyEnquiryStatus};
@@ -64,12 +73,12 @@ function setSelection(a,b){
 }
 function select(date){
  if(!pickArrival||pickDeparture||date<=pickArrival){
-  if(A.isBusy(data,date)){message('This sample date is booked. Choose an available arrival.');return}
+  if(A.isBusy(data,date)){message('This date is booked. Choose an available arrival.');return}
   setSelection(date,'');message('Arrival selected. Now choose your departure.');return;
  }
  const check=A.checkStay(data,pickArrival,date,today);
  if(!check.ok){message(check.reason);return}
- setSelection(pickArrival,date);message('Sample dates selected. Continue to enquire; dates remain subject to confirmation.');
+ setSelection(pickArrival,date);message('Dates selected. Continue to enquire; your stay is confirmed personally.');
 }
 function render(){
  const focusedDate=document.activeElement?.dataset?.date;
@@ -93,8 +102,8 @@ function render(){
    button.className='calendar-day'+(busy?' booked':' available')+(checkout?' checkout-only':'')+(selected?' selected':'')+(inStay?' in-stay':'');
    button.disabled=!!(past||unknown||(busy&&!checkout));
    button.setAttribute('aria-pressed',String(selected||!!inStay));
-   button.setAttribute('aria-label',format(date)+', '+(past?'past date':unknown?'availability unknown':checkout?'available for departure only':busy?'booked sample night':'available sample night')+(date===pickArrival?', selected arrival':'')+(date===pickDeparture?', selected departure':''));
-   button.title=checkout?'Departure only; this night is booked':busy?'Sample booked night':'Sample available night';
+   button.setAttribute('aria-label',format(date)+', '+(past?'past date':unknown?'availability unknown':checkout?'available for departure only':busy?'booked night':'available night')+(date===pickArrival?', selected arrival':'')+(date===pickDeparture?', selected departure':''));
+   button.title=checkout?'Departure only; this night is booked':busy?'Booked night':'Available night';
    button.onclick=()=>select(date);grid.append(button);
   }
   section.append(grid);host.append(section);
@@ -113,13 +122,13 @@ arrival.onchange=departure.onchange=()=>{
  message(check&&!check.ok?check.reason:'Your enquiry dates are reflected in the calendar.');render();
 };
 form.addEventListener('input',resetResult);
- let deliveryMode='preview',previousBody='',requestKey='';
+ let deliveryMode='unavailable',previousBody='',requestKey='';
 const submit=form.querySelector('button[type="submit"]');
  const googleEndpoint=window.HARBOUR_ENQUIRY_ENDPOINT||'';
- function enableLiveCopy(provider){
-  deliveryMode=provider;submit.textContent='Send enquiry';
-  document.querySelector('.preview-note').textContent='Send an enquiry to the owner by email. Requested dates remain subject to personal confirmation; submitting does not reserve them.';
-  document.querySelector('.form-privacy').textContent='Your details are sent through Google to send your enquiry and an acknowledgement. No booking or calendar event is created.';
+ function enableLive(){
+  deliveryMode='google';submit.textContent='Send enquiry';submit.disabled=false;
+  document.querySelector('.booking-note').textContent='Send an enquiry to the owner. Requested dates remain subject to personal confirmation; submitting does not reserve them.';
+  document.querySelector('.form-privacy').textContent='Your details are sent through Google to deliver your enquiry and acknowledgement. No booking or calendar event is created.';
  }
  function sendViaGoogle(fields,key){
   return new Promise((resolve,reject)=>{
@@ -149,18 +158,8 @@ const submit=form.querySelector('button[type="submit"]');
    try{transport.submit();poll()}catch(error){clean();reject(Error('We could not send your enquiry. Please contact us directly.'))}
   });
  }
- if(googleEndpoint){enableLiveCopy('google');submit.disabled=false}
- else if(window.HARBOUR_STATIC_PRODUCTION){
-  deliveryMode='unconfigured';submit.disabled=true;submit.textContent='Email setup pending';
-  document.querySelector('.preview-note').textContent='Online email delivery is being configured. For now, use the current booking enquiry form or phone number above.';
-  document.querySelector('.form-privacy').textContent='This enquiry form will be available when secure email delivery is configured. No details are currently sent or saved.';
- }
- else if(location.protocol!=='file:')fetch('/api/enquiry-config').then(r=>{if(!r.ok)throw Error();return r.json()}).then(config=>{
- if(config.mode==='live'){
-   enableLiveCopy('server');
-   document.querySelector('.form-privacy').textContent='Your details are used to respond to this enquiry and are sent through our email delivery provider. No booking is created.';
- }
-}).catch(()=>{});
+ if(googleEndpoint&&/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(googleEndpoint))enableLive();
+ else{submit.disabled=true;submit.textContent='Enquiries temporarily unavailable';document.querySelector('.booking-note').textContent='Please contact us directly to ask about your stay.';}
 form.addEventListener('submit',async e=>{
  e.preventDefault();if(submit.disabled)return;
  const fields=Object.fromEntries(new FormData(form)),error=document.querySelector('#form-error');
@@ -172,26 +171,21 @@ form.addEventListener('submit',async e=>{
  const body=JSON.stringify(fields);if(body!==previousBody){requestKey='hh-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)+'-'+Math.random().toString(36).slice(2);previousBody=body;}
  const controls=[...form.elements];controls.forEach(c=>c.disabled=true);submit.textContent='Preparing your enquiry…';
  try{
-   let result={mode:'preview',acknowledgement:'preview'};
-   if(deliveryMode==='google')result=await sendViaGoogle(fields,requestKey);
-   else if(location.protocol!=='file:'){
-   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),35000);
-   try{const response=await fetch('/api/enquiries',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':requestKey},body,signal:controller.signal});result=await response.json();if(!response.ok)throw Error(result.error||'Your enquiry could not be sent. Please try again or contact us directly.');}finally{clearTimeout(timer)}
-  }
-  const live=result.mode==='live';
-  document.querySelector('.result-label').textContent=live?'ENQUIRY RECEIVED':'ENQUIRY PREVIEW';
-   document.querySelector('#result-intro').textContent=live?'We have received your request for 3 Harbour House, Dunmore East.':'Your request is ready to review. This is a demonstration: no email has been sent.';
+   const result=await sendViaGoogle(fields,requestKey);
+  document.querySelector('.result-label').textContent='ENQUIRY RECEIVED';
+   document.querySelector('#result-intro').textContent='We have received your request for 3 Harbour House, Dunmore East.';
   document.querySelector('#result-stay').textContent='Requested stay: '+format(fields.arrival)+' – '+format(fields.departure)+' · '+fields.guests+' guest'+(fields.guests==='1'?'':'s');
-   document.querySelector('#result-next').textContent=live?'We will confirm availability and booking details with you shortly. '+(result.acknowledgement==='accepted'?'An acknowledgement email has also been sent.':result.acknowledgement==='failed'?'Your enquiry reached the owner, but the automatic acknowledgement could not be sent. Please do not submit it again.':''):'Once email delivery is connected, we will confirm availability and booking details with you shortly. To enquire now, use the current booking enquiry form or phone number.';
+   document.querySelector('#result-next').textContent='We will confirm availability and booking details with you shortly. '+(result.acknowledgement==='accepted'?'An acknowledgement email has also been sent.':result.acknowledgement==='failed'?'Your enquiry reached the owner, but the automatic acknowledgement could not be sent. Please do not submit it again.':'');
   document.querySelector('#draft-text').textContent=result.ownerText||'Enquiry — 3 Harbour House\n\nName: '+fields.name+'\nEmail: '+fields.email+'\nMobile / contact: '+fields.phone+'\nArrival: '+fields.arrival+'\nDeparture: '+fields.departure+'\nNights: '+check.nights+'\nGuests: '+fields.guests+'\n\n'+(fields.message||'Please confirm availability and the total price for these dates.');
   document.querySelector('#draft').hidden=false;document.querySelector('#copy-status').textContent='';
   document.querySelector('#enquiry-result').focus({preventScroll:true});document.querySelector('#draft').scrollIntoView({block:'start',behavior:'smooth'});
  }catch(err){error.textContent=err.name==='AbortError'?'We could not confirm delivery. Retry with the same details or contact us directly.':err.message;}
-  finally{controls.forEach(c=>c.disabled=false);submit.textContent=deliveryMode==='google'||deliveryMode==='server'?'Send enquiry':'Submit preview enquiry';}
+  finally{controls.forEach(c=>c.disabled=false);submit.textContent='Send enquiry';}
 });
 
-document.querySelector('#copy').onclick=async()=>{try{await navigator.clipboard.writeText(document.querySelector('#draft-text').textContent);document.querySelector('#copy-status').textContent=deliveryMode==='google'||deliveryMode==='server'?'Enquiry details copied.':'Enquiry copied. Nothing has been sent.'}catch{document.querySelector('#copy-status').textContent='Select and copy the draft text above.'}};
-render();message('Loading sample availability…');
-A.provider.load({from:today,to:dateFor(last+1)}).then(raw=>{data=A.normalize(raw);render();message('Sample availability ready. Choose an arrival date.')}).catch(()=>{data=null;render();message('Availability could not be loaded. Please contact us; no dates are shown as available.')});
+document.querySelector('#copy').onclick=async()=>{try{await navigator.clipboard.writeText(document.querySelector('#draft-text').textContent);document.querySelector('#copy-status').textContent='Enquiry details copied.'}catch{document.querySelector('#copy-status').textContent='Select and copy the draft text above.'}};
+render();message('Loading live availability…');
+const requested={from:today.slice(0,7)+'-01',to:dateFor(last+1)};
+A.provider.load(requested).then(raw=>{data=A.normalize(raw,requested);render();message('Live availability loaded. Choose an arrival date.')}).catch(()=>{data=null;render();message('Live availability is temporarily unavailable. Please contact us; no dates are shown as available.')});
 })();
 }
