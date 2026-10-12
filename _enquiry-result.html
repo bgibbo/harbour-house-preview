@@ -14,7 +14,10 @@
       const requestId=params.get('request_id')||'';
       const status=params.get('status')||'';
       if(!/^hh-[a-zA-Z0-9-]{16,100}$/.test(requestId)||!['accepted','partial','failed'].includes(status))return;
-      window.parent.postMessage({channel:'harbour-house-enquiry',requestId,status},location.origin);
+      // Google Sites can sandbox the embedded site, giving this frame an opaque
+      // origin. The parent validates this message against its exact iframe,
+      // request ID and status, so a wildcard target does not expose guest data.
+      window.parent.postMessage({channel:'harbour-house-enquiry',requestId,status},'*');
     })();
   </script>
 </body>

@@ -125,7 +125,8 @@ const submit=form.querySelector('button[type="submit"]');
    const clean=()=>{window.removeEventListener('message',receive);clearTimeout(timer);transport.remove();frame.remove()};
    const receive=event=>{
     const payload=event.data;
-    if(event.origin!==location.origin||event.source!==frame.contentWindow||!payload||payload.channel!=='harbour-house-enquiry'||payload.requestId!==key)return;
+    const trustedOrigin=event.origin===location.origin||event.origin==='null';
+    if(!trustedOrigin||event.source!==frame.contentWindow||!payload||payload.channel!=='harbour-house-enquiry'||payload.requestId!==key||!['accepted','partial','failed'].includes(payload.status))return;
     clean();if(payload.status==='accepted')resolve({mode:'live',acknowledgement:'accepted'});else if(payload.status==='partial')resolve({mode:'live',acknowledgement:'failed'});else reject(Error('We could not send your enquiry. Please contact us directly before trying again.'));
    };
    window.addEventListener('message',receive);document.body.append(frame,transport);
