@@ -41,7 +41,6 @@ const base=first.getUTCFullYear()*12+first.getUTCMonth(),last=base+17;
 const dateFor=(m,d=1)=>A.monthDate(Math.floor(m/12),m%12,d);
 let view=base,data=null,pickArrival='',pickDeparture='';
 const mobile=matchMedia('(max-width:700px)');
-const staticPreview=document.querySelector('meta[name="harbour-static-preview"]')?.content==='true';
 const form=document.querySelector('#enquiry-form'),arrival=form.elements.arrival,departure=form.elements.departure;
 arrival.min=today;departure.min=A.addDays(today,1);
 const status=document.querySelector('#availability-status'),summary=document.querySelector('#selected-dates'),cta=document.querySelector('#dates-enquiry');
@@ -107,13 +106,43 @@ arrival.onchange=departure.onchange=()=>{
  message(check&&!check.ok?check.reason:'Your enquiry dates are reflected in the calendar.');render();
 };
 form.addEventListener('input',resetResult);
-let deliveryMode='preview',previousBody='',requestKey='';
+ let deliveryMode='preview',previousBody='',requestKey='';
 const submit=form.querySelector('button[type="submit"]');
-if(location.protocol!=='file:'&&!staticPreview)fetch('/api/enquiry-config').then(r=>{if(!r.ok)throw Error();return r.json()}).then(config=>{
- if(config.mode==='live'){
-  deliveryMode='live';submit.textContent='Send enquiry';
+ const googleEndpoint=window.HARBOUR_ENQUIRY_ENDPOINT||'';
+ function enableLiveCopy(provider){
+  deliveryMode=provider;submit.textContent='Send enquiry';
   document.querySelector('.preview-note').textContent='Send an enquiry to the owner by email. Requested dates remain subject to personal confirmation; submitting does not reserve them.';
-  document.querySelector('.form-privacy').textContent='Your details are used to respond to this enquiry and are sent through our email delivery provider. No booking is created.';
+  document.querySelector('.form-privacy').textContent='Your details are sent through Google to send your enquiry and an acknowledgement. No booking or calendar event is created.';
+ }
+ function sendViaGoogle(fields,key){
+  return new Promise((resolve,reject)=>{
+   if(!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(googleEndpoint)){reject(Error('The enquiry email service is not configured yet. Please contact us directly.'));return}
+   const frame=document.createElement('iframe');frame.name='hh-enquiry-'+key.replace(/[^a-zA-Z0-9-]/g,'');frame.title='Enquiry delivery';frame.setAttribute('aria-hidden','true');frame.style.cssText='position:absolute;width:1px;height:1px;left:-10000px;border:0';
+   const transport=document.createElement('form');transport.method='POST';transport.action=googleEndpoint;transport.target=frame.name;transport.acceptCharset='UTF-8';transport.style.display='none';
+   const values={...fields,request_id:key};
+   for(const [name,value] of Object.entries(values)){const input=document.createElement('input');input.type='hidden';input.name=name;input.value=String(value??'');transport.append(input)}
+   let timer;
+   const clean=()=>{window.removeEventListener('message',receive);clearTimeout(timer);transport.remove();frame.remove()};
+   const receive=event=>{
+    const payload=event.data;
+    if(event.origin!==location.origin||event.source!==frame.contentWindow||!payload||payload.channel!=='harbour-house-enquiry'||payload.requestId!==key)return;
+    clean();if(payload.status==='accepted')resolve({mode:'live',acknowledgement:'accepted'});else if(payload.status==='partial')resolve({mode:'live',acknowledgement:'failed'});else reject(Error('We could not send your enquiry. Please contact us directly before trying again.'));
+   };
+   window.addEventListener('message',receive);document.body.append(frame,transport);
+   timer=setTimeout(()=>{clean();reject(Error('We could not confirm delivery. Please contact us directly before trying again.'))},60000);
+   try{transport.submit()}catch(error){clean();reject(Error('We could not send your enquiry. Please contact us directly.'))}
+  });
+ }
+ if(googleEndpoint){enableLiveCopy('google');submit.disabled=false}
+ else if(window.HARBOUR_STATIC_PRODUCTION){
+  deliveryMode='unconfigured';submit.disabled=true;submit.textContent='Email setup pending';
+  document.querySelector('.preview-note').textContent='Online email delivery is being configured. For now, use the current booking enquiry form or phone number above.';
+  document.querySelector('.form-privacy').textContent='This enquiry form will be available when secure email delivery is configured. No details are currently sent or saved.';
+ }
+ else if(location.protocol!=='file:')fetch('/api/enquiry-config').then(r=>{if(!r.ok)throw Error();return r.json()}).then(config=>{
+ if(config.mode==='live'){
+   enableLiveCopy('server');
+   document.querySelector('.form-privacy').textContent='Your details are used to respond to this enquiry and are sent through our email delivery provider. No booking is created.';
  }
 }).catch(()=>{});
 form.addEventListener('submit',async e=>{
@@ -127,24 +156,25 @@ form.addEventListener('submit',async e=>{
  const body=JSON.stringify(fields);if(body!==previousBody){requestKey='hh-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)+'-'+Math.random().toString(36).slice(2);previousBody=body;}
  const controls=[...form.elements];controls.forEach(c=>c.disabled=true);submit.textContent='Preparing your enquiry…';
  try{
-  let result={mode:'preview',acknowledgement:'preview'};
-  if(location.protocol!=='file:'&&!staticPreview){
+   let result={mode:'preview',acknowledgement:'preview'};
+   if(deliveryMode==='google')result=await sendViaGoogle(fields,requestKey);
+   else if(location.protocol!=='file:'){
    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),35000);
    try{const response=await fetch('/api/enquiries',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':requestKey},body,signal:controller.signal});result=await response.json();if(!response.ok)throw Error(result.error||'Your enquiry could not be sent. Please try again or contact us directly.');}finally{clearTimeout(timer)}
   }
   const live=result.mode==='live';
   document.querySelector('.result-label').textContent=live?'ENQUIRY RECEIVED':'ENQUIRY PREVIEW';
-  document.querySelector('#result-intro').textContent=live?'We have received your request for 3 Harbour House, Dunmore East.':'Your request is ready to review. This is a demonstration: no email has been sent.';
+   document.querySelector('#result-intro').textContent=live?'We have received your request for 3 Harbour House, Dunmore East.':'Your request is ready to review. This is a demonstration: no email has been sent.';
   document.querySelector('#result-stay').textContent='Requested stay: '+format(fields.arrival)+' – '+format(fields.departure)+' · '+fields.guests+' guest'+(fields.guests==='1'?'':'s');
-  document.querySelector('#result-next').textContent=live?'We will confirm availability and booking details with you shortly. '+(result.acknowledgement==='accepted'?'An acknowledgement email has also been accepted for sending.':result.acknowledgement==='failed'?'Your request reached our email service, but the acknowledgement email could not be sent. Please do not resubmit.':''):'Once email delivery is connected, we will confirm availability and booking details with you shortly. To enquire now, use the current booking enquiry form or phone number.';
+   document.querySelector('#result-next').textContent=live?'We will confirm availability and booking details with you shortly. '+(result.acknowledgement==='accepted'?'An acknowledgement email has also been sent.':result.acknowledgement==='failed'?'Your enquiry reached the owner, but the automatic acknowledgement could not be sent. Please do not submit it again.':''):'Once email delivery is connected, we will confirm availability and booking details with you shortly. To enquire now, use the current booking enquiry form or phone number.';
   document.querySelector('#draft-text').textContent=result.ownerText||'Enquiry — 3 Harbour House\n\nName: '+fields.name+'\nEmail: '+fields.email+'\nMobile / contact: '+fields.phone+'\nArrival: '+fields.arrival+'\nDeparture: '+fields.departure+'\nNights: '+check.nights+'\nGuests: '+fields.guests+'\n\n'+(fields.message||'Please confirm availability and the total price for these dates.');
   document.querySelector('#draft').hidden=false;document.querySelector('#copy-status').textContent='';
   document.querySelector('#enquiry-result').focus({preventScroll:true});document.querySelector('#draft').scrollIntoView({block:'start',behavior:'smooth'});
  }catch(err){error.textContent=err.name==='AbortError'?'We could not confirm delivery. Retry with the same details or contact us directly.':err.message;}
- finally{controls.forEach(c=>c.disabled=false);submit.textContent=deliveryMode==='live'?'Send enquiry':'Submit preview enquiry';}
+  finally{controls.forEach(c=>c.disabled=false);submit.textContent=deliveryMode==='google'||deliveryMode==='server'?'Send enquiry':'Submit preview enquiry';}
 });
 
-document.querySelector('#copy').onclick=async()=>{try{await navigator.clipboard.writeText(document.querySelector('#draft-text').textContent);document.querySelector('#copy-status').textContent=deliveryMode==='live'?'Enquiry details copied.':'Enquiry copied. Nothing has been sent.'}catch{document.querySelector('#copy-status').textContent='Select and copy the draft text above.'}};
+document.querySelector('#copy').onclick=async()=>{try{await navigator.clipboard.writeText(document.querySelector('#draft-text').textContent);document.querySelector('#copy-status').textContent=deliveryMode==='google'||deliveryMode==='server'?'Enquiry details copied.':'Enquiry copied. Nothing has been sent.'}catch{document.querySelector('#copy-status').textContent='Select and copy the draft text above.'}};
 render();message('Loading sample availability…');
 A.provider.load({from:today,to:dateFor(last+1)}).then(raw=>{data=A.normalize(raw);render();message('Sample availability ready. Choose an arrival date.')}).catch(()=>{data=null;render();message('Availability could not be loaded. Please contact us; no dates are shown as available.')});
 })();
