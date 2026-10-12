@@ -43,10 +43,40 @@ function checkStay(data,arrival,departure,today){
   if(!validDate(arrival)||!validDate(departure)||departure<=arrival)return {ok:false,reason:'Departure must be after arrival.'};
   if(arrival<today)return {ok:false,reason:'Choose an arrival from today onwards.'};
   if(!data||arrival<data.from||departure>data.to)return {ok:false,reason:'Availability cannot be checked for those dates. Please contact us.'};
-  if(data.busy.some(x=>arrival<x.end&&departure>x.start))return {ok:false,reason:'Those nights overlap booked dates. Please choose another stay.'};
+  if(data.busy.some(x=>arrival<x.end&&departure>x.start))return {ok:false,reason:'The selected stay overlaps unavailable dates. Please choose another stay.'};
   return {ok:true,nights:Math.round((Date.parse(departure+'T12:00:00Z')-Date.parse(arrival+'T12:00:00Z'))/DAY)};
 }
-global.HarbourAvailability={provider,normalize,checkStay,isBusy,addDays,monthDate,todayDublin,classifyEnquiryStatus};
+function chooseDate(selection,date,data,today){
+ const current={arrival:selection.arrival||'',departure:selection.departure||''};
+ if(!current.arrival||current.departure||date<=current.arrival){
+  if(isBusy(data,date))return {selection:current,message:'This date is unavailable. Choose another arrival.'};
+  return {selection:{arrival:date,departure:''},message:'Arrival selected. Now choose your departure.'};
+ }
+ const check=checkStay(data,current.arrival,date,today);
+ if(!check.ok)return {selection:current,message:check.reason};
+ return {selection:{arrival:current.arrival,departure:date},message:'Dates selected. Continue to enquire; your stay is confirmed personally.'};
+}
+let lastTouchActivation=null;
+function bindDateActivation(button,date,activate){
+ let touchStart=null;
+ button.addEventListener('pointerdown',event=>{
+  if(event.pointerType==='touch')touchStart={id:event.pointerId,x:event.clientX,y:event.clientY};
+ });
+ button.addEventListener('pointercancel',event=>{
+  if(touchStart&&touchStart.id===event.pointerId){touchStart=null;lastTouchActivation={date,at:Date.now()}}
+ });
+ button.addEventListener('pointerup',event=>{
+  if(event.pointerType!=='touch')return;
+  const start=touchStart;touchStart=null;lastTouchActivation={date,at:Date.now()};
+  if(!start||start.id!==event.pointerId||Math.abs(event.clientX-start.x)>12||Math.abs(event.clientY-start.y)>12)return;
+  activate(date);
+ });
+ button.addEventListener('click',event=>{
+  if(event.detail!==0&&lastTouchActivation&&lastTouchActivation.date===date&&Date.now()-lastTouchActivation.at<800){lastTouchActivation=null;return}
+  activate(date);
+ });
+}
+global.HarbourAvailability={provider,normalize,checkStay,isBusy,addDays,monthDate,todayDublin,classifyEnquiryStatus,chooseDate,bindDateActivation};
 })(typeof window!=='undefined'?window:globalThis);
 
 if(typeof document!=='undefined'){
@@ -72,13 +102,11 @@ function setSelection(a,b){
  render();
 }
 function select(date){
- if(!pickArrival||pickDeparture||date<=pickArrival){
-  if(A.isBusy(data,date)){message('This date is booked. Choose an available arrival.');return}
-  setSelection(date,'');message('Arrival selected. Now choose your departure.');return;
+ const result=A.chooseDate({arrival:pickArrival,departure:pickDeparture},date,data,today);
+ if(result.selection.arrival!==pickArrival||result.selection.departure!==pickDeparture){
+  setSelection(result.selection.arrival,result.selection.departure);
  }
- const check=A.checkStay(data,pickArrival,date,today);
- if(!check.ok){message(check.reason);return}
- setSelection(pickArrival,date);message('Dates selected. Continue to enquire; your stay is confirmed personally.');
+ message(result.message);
 }
 function render(){
  const focusedDate=document.activeElement?.dataset?.date;
@@ -104,7 +132,7 @@ function render(){
    button.setAttribute('aria-pressed',String(selected||!!inStay));
    button.setAttribute('aria-label',format(date)+', '+(past?'past date':unknown?'availability unknown':checkout?'available for departure only':busy?'booked night':'available night')+(date===pickArrival?', selected arrival':'')+(date===pickDeparture?', selected departure':''));
    button.title=checkout?'Departure only; this night is booked':busy?'Booked night':'Available night';
-   button.onclick=()=>select(date);grid.append(button);
+   A.bindDateActivation(button,date,select);grid.append(button);
   }
   section.append(grid);host.append(section);
  }
