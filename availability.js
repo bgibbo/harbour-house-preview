@@ -56,27 +56,15 @@ function chooseDate(selection,date,data,today){
  if(!check.ok)return {selection:current,message:check.reason};
  return {selection:{arrival:current.arrival,departure:date},message:'Dates selected. Continue to enquire; your stay is confirmed personally.'};
 }
-let lastTouchActivation=null;
-function bindDateActivation(button,date,activate){
- let touchStart=null;
- button.addEventListener('pointerdown',event=>{
-  if(event.pointerType==='touch')touchStart={id:event.pointerId,x:event.clientX,y:event.clientY};
- });
- button.addEventListener('pointercancel',event=>{
-  if(touchStart&&touchStart.id===event.pointerId){touchStart=null;lastTouchActivation={date,at:Date.now()}}
- });
- button.addEventListener('pointerup',event=>{
-  if(event.pointerType!=='touch')return;
-  const start=touchStart;touchStart=null;lastTouchActivation={date,at:Date.now()};
-  if(!start||start.id!==event.pointerId||Math.abs(event.clientX-start.x)>12||Math.abs(event.clientY-start.y)>12)return;
-  activate(date);
- });
- button.addEventListener('click',event=>{
-  if(event.detail!==0&&lastTouchActivation&&lastTouchActivation.date===date&&Date.now()-lastTouchActivation.at<800){lastTouchActivation=null;return}
-  activate(date);
- });
+function bindDateClick(button,date,activate){button.addEventListener('click',()=>activate(date))}
+function observeAvailabilitySection(section,body,Observer){
+ if(!section||!body||typeof Observer!=='function')return null;
+ const observer=new Observer(entries=>{
+  body.classList.toggle('availability-visible',entries.some(entry=>entry.isIntersecting));
+ },{threshold:0});
+ observer.observe(section);return observer;
 }
-global.HarbourAvailability={provider,normalize,checkStay,isBusy,addDays,monthDate,todayDublin,classifyEnquiryStatus,chooseDate,bindDateActivation};
+global.HarbourAvailability={provider,normalize,checkStay,isBusy,addDays,monthDate,todayDublin,classifyEnquiryStatus,chooseDate,bindDateClick,observeAvailabilitySection};
 })(typeof window!=='undefined'?window:globalThis);
 
 if(typeof document!=='undefined'){
@@ -132,7 +120,7 @@ function render(){
    button.setAttribute('aria-pressed',String(selected||!!inStay));
    button.setAttribute('aria-label',format(date)+', '+(past?'past date':unknown?'availability unknown':checkout?'available for departure only':busy?'booked night':'available night')+(date===pickArrival?', selected arrival':'')+(date===pickDeparture?', selected departure':''));
    button.title=checkout?'Departure only; this night is booked':busy?'Booked night':'Available night';
-   A.bindDateActivation(button,date,select);grid.append(button);
+   A.bindDateClick(button,date,select);grid.append(button);
   }
   section.append(grid);host.append(section);
  }
@@ -141,7 +129,8 @@ function render(){
 document.querySelector('#previous-month').onclick=()=>{view=Math.max(base,view-1);render()};
 document.querySelector('#next-month').onclick=()=>{view=Math.min(last-(mobile.matches?0:1),view+1);render()};
 mobile.addEventListener('change',()=>{view=Math.min(view,last-(mobile.matches?0:1));render()});
-document.querySelector('#clear-dates').onclick=()=>{setSelection('','');message('Dates cleared. Choose an arrival.')};
+A.observeAvailabilitySection(document.querySelector('#availability'),document.body,window.IntersectionObserver);
+document.querySelector('#clear-dates').addEventListener('click',()=>{setSelection('','');message('Dates cleared. Choose an arrival.')});
 cta.onclick=e=>{if(cta.getAttribute('aria-disabled')==='true'){e.preventDefault();message('Select an arrival and departure first.')}else{form.elements.guests.focus({preventScroll:true})}};
 arrival.onchange=departure.onchange=()=>{
  resetResult();pickArrival=arrival.value;pickDeparture=departure.value;departure.min=pickArrival?A.addDays(pickArrival,1):A.addDays(today,1);
