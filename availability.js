@@ -8,6 +8,25 @@ const addDays=(date,n)=>iso(new Date(Date.parse(date+'T12:00:00Z')+n*DAY));
 const monthDate=(year,month,day=1)=>iso(new Date(Date.UTC(year,month,day,12)));
 const todayDublin=()=>{const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Dublin',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));return p.year+'-'+p.month+'-'+p.day};
 const validDate=d=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d)&&!isNaN(Date.parse(d+'T12:00:00Z'))&&iso(new Date(d+'T12:00:00Z'))===d;
+function enquiryReplySourceMatches(transportFrame,eventSource){
+ if(!transportFrame||!transportFrame.contentWindow)return false;
+ if(transportFrame.contentWindow===eventSource)return true;
+ let level=[transportFrame.contentWindow];
+ for(let depth=0;depth<2;depth++){
+  const next=[];
+  for(const parent of level){
+   try{for(let i=0;i<parent.frames.length;i++){
+    const child=parent.frames[i];if(child===eventSource)return true;next.push(child);
+   }}catch{}
+  }
+  level=next;
+ }
+ return false;
+}
+function enquiryReplyOriginMatches(eventOrigin,receiverOrigin,receiverHref){
+ let expectedOrigin;try{expectedOrigin=new URL(receiverHref).origin}catch{return false}
+ return eventOrigin===receiverOrigin||eventOrigin===expectedOrigin||(eventOrigin==='null'&&receiverOrigin==='null');
+}
 const provider={async load({from,to}){
   const busy=[];const first=new Date(from+'T12:00:00Z'),end=new Date(to+'T12:00:00Z');
   for(let m=first.getUTCMonth(),y=first.getUTCFullYear();monthDate(y,m)<to;m++){
@@ -30,7 +49,7 @@ function checkStay(data,arrival,departure,today){
   if(data.busy.some(x=>arrival<x.end&&departure>x.start))return {ok:false,reason:'Those nights overlap '+(data.mode==='demo'?'sample ':'')+'booked dates. Please choose another stay.'};
   return {ok:true,nights:Math.round((Date.parse(departure+'T12:00:00Z')-Date.parse(arrival+'T12:00:00Z'))/DAY)};
 }
-global.HarbourAvailability={provider,normalize,checkStay,isBusy,addDays,monthDate,todayDublin};
+global.HarbourAvailability={provider,normalize,checkStay,isBusy,addDays,monthDate,todayDublin,enquiryReplySourceMatches,enquiryReplyOriginMatches};
 })(typeof window!=='undefined'?window:globalThis);
 
 if(typeof document!=='undefined'){
@@ -125,8 +144,9 @@ const submit=form.querySelector('button[type="submit"]');
    const clean=()=>{window.removeEventListener('message',receive);clearTimeout(timer);transport.remove();frame.remove()};
    const receive=event=>{
     const payload=event.data;
-    const trustedOrigin=event.origin===location.origin||event.origin==='null';
-    if(!trustedOrigin||event.source!==frame.contentWindow||!payload||payload.channel!=='harbour-house-enquiry'||payload.requestId!==key||!['accepted','partial','failed'].includes(payload.status))return;
+    const trustedOrigin=A.enquiryReplyOriginMatches(event.origin,location.origin,location.href);
+    const trustedSource=A.enquiryReplySourceMatches(frame,event.source);
+    if(!trustedOrigin||!trustedSource||!payload||payload.channel!=='harbour-house-enquiry'||payload.requestId!==key||!['accepted','partial','failed'].includes(payload.status))return;
     clean();if(payload.status==='accepted')resolve({mode:'live',acknowledgement:'accepted'});else if(payload.status==='partial')resolve({mode:'live',acknowledgement:'failed'});else reject(Error('We could not send your enquiry. Please contact us directly before trying again.'));
    };
    window.addEventListener('message',receive);document.body.append(frame,transport);
