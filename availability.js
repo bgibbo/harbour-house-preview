@@ -8,24 +8,12 @@ const addDays=(date,n)=>iso(new Date(Date.parse(date+'T12:00:00Z')+n*DAY));
 const monthDate=(year,month,day=1)=>iso(new Date(Date.UTC(year,month,day,12)));
 const todayDublin=()=>{const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Dublin',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));return p.year+'-'+p.month+'-'+p.day};
 const validDate=d=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d)&&!isNaN(Date.parse(d+'T12:00:00Z'))&&iso(new Date(d+'T12:00:00Z'))===d;
-function enquiryReplySourceMatches(transportFrame,eventSource){
- if(!transportFrame||!transportFrame.contentWindow)return false;
- if(transportFrame.contentWindow===eventSource)return true;
- let level=[transportFrame.contentWindow];
- for(let depth=0;depth<2;depth++){
-  const next=[];
-  for(const parent of level){
-   try{for(let i=0;i<parent.frames.length;i++){
-    const child=parent.frames[i];if(child===eventSource)return true;next.push(child);
-   }}catch{}
-  }
-  level=next;
- }
- return false;
-}
-function enquiryReplyOriginMatches(eventOrigin,receiverOrigin,receiverHref){
- let expectedOrigin;try{expectedOrigin=new URL(receiverHref).origin}catch{return false}
- return eventOrigin===receiverOrigin||eventOrigin===expectedOrigin||(eventOrigin==='null'&&receiverOrigin==='null');
+function classifyEnquiryStatus(payload,requestId){
+ if(!payload||payload.requestId!==requestId)return null;
+ if(payload.status==='accepted')return {mode:'live',acknowledgement:'accepted'};
+ if(payload.status==='partial')return {mode:'live',acknowledgement:'failed'};
+ if(payload.status==='failed')return {error:'We could not send your enquiry. Please contact us directly before trying again.'};
+ return null;
 }
 const provider={async load({from,to}){
   const busy=[];const first=new Date(from+'T12:00:00Z'),end=new Date(to+'T12:00:00Z');
@@ -49,7 +37,7 @@ function checkStay(data,arrival,departure,today){
   if(data.busy.some(x=>arrival<x.end&&departure>x.start))return {ok:false,reason:'Those nights overlap '+(data.mode==='demo'?'sample ':'')+'booked dates. Please choose another stay.'};
   return {ok:true,nights:Math.round((Date.parse(departure+'T12:00:00Z')-Date.parse(arrival+'T12:00:00Z'))/DAY)};
 }
-global.HarbourAvailability={provider,normalize,checkStay,isBusy,addDays,monthDate,todayDublin,enquiryReplySourceMatches,enquiryReplyOriginMatches};
+global.HarbourAvailability={provider,normalize,checkStay,isBusy,addDays,monthDate,todayDublin,classifyEnquiryStatus};
 })(typeof window!=='undefined'?window:globalThis);
 
 if(typeof document!=='undefined'){
@@ -136,22 +124,29 @@ const submit=form.querySelector('button[type="submit"]');
  function sendViaGoogle(fields,key){
   return new Promise((resolve,reject)=>{
    if(!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(googleEndpoint)){reject(Error('The enquiry email service is not configured yet. Please contact us directly.'));return}
-   const frame=document.createElement('iframe');frame.name='hh-enquiry-'+key.replace(/[^a-zA-Z0-9-]/g,'');frame.title='Enquiry delivery';frame.setAttribute('aria-hidden','true');frame.style.cssText='position:absolute;width:1px;height:1px;left:-10000px;border:0';
+   const frame=document.createElement('iframe');frame.name='hh-enquiry-'+key.replace(/[^a-zA-Z0-9-]/g,'');frame.title='Enquiry submission transport';frame.setAttribute('aria-hidden','true');frame.style.cssText='position:absolute;width:1px;height:1px;left:-10000px;border:0';
    const transport=document.createElement('form');transport.method='POST';transport.action=googleEndpoint;transport.target=frame.name;transport.acceptCharset='UTF-8';transport.style.display='none';
    const values={...fields,request_id:key};
    for(const [name,value] of Object.entries(values)){const input=document.createElement('input');input.type='hidden';input.name=name;input.value=String(value??'');transport.append(input)}
-   let timer;
-   const clean=()=>{window.removeEventListener('message',receive);clearTimeout(timer);transport.remove();frame.remove()};
-   const receive=event=>{
-    const payload=event.data;
-    const trustedOrigin=A.enquiryReplyOriginMatches(event.origin,location.origin,location.href);
-    const trustedSource=A.enquiryReplySourceMatches(frame,event.source);
-    if(!trustedOrigin||!trustedSource||!payload||payload.channel!=='harbour-house-enquiry'||payload.requestId!==key||!['accepted','partial','failed'].includes(payload.status))return;
-    clean();if(payload.status==='accepted')resolve({mode:'live',acknowledgement:'accepted'});else if(payload.status==='partial')resolve({mode:'live',acknowledgement:'failed'});else reject(Error('We could not send your enquiry. Please contact us directly before trying again.'));
+   const callbackName='__hhStatus_'+(Math.random().toString(16).slice(2)+Math.random().toString(16).slice(2)+Date.now().toString(16)).slice(0,40);
+   let timer,pollTimer,currentScript,finished=false;
+   const clean=()=>{finished=true;clearTimeout(timer);clearTimeout(pollTimer);if(currentScript)currentScript.remove();delete window[callbackName];transport.remove();frame.remove()};
+   window[callbackName]=payload=>{
+    if(finished)return;
+    const result=A.classifyEnquiryStatus(payload,key);if(!result)return;
+    clean();if(result.error)reject(Error(result.error));else resolve(result);
    };
-   window.addEventListener('message',receive);document.body.append(frame,transport);
+   const poll=()=>{
+    if(finished)return;
+    currentScript=document.createElement('script');currentScript.async=true;
+    const statusUrl=new URL(googleEndpoint);statusUrl.searchParams.set('action','status');statusUrl.searchParams.set('request_id',key);statusUrl.searchParams.set('callback',callbackName);statusUrl.searchParams.set('_',String(Date.now()));
+    currentScript.src=statusUrl.href;
+    currentScript.onload=currentScript.onerror=()=>{if(currentScript)currentScript.remove();if(!finished)pollTimer=setTimeout(poll,1200)};
+    document.head.append(currentScript);
+   };
+   document.body.append(frame,transport);
    timer=setTimeout(()=>{clean();reject(Error('We could not confirm delivery. Please contact us directly before trying again.'))},60000);
-   try{transport.submit()}catch(error){clean();reject(Error('We could not send your enquiry. Please contact us directly.'))}
+   try{transport.submit();poll()}catch(error){clean();reject(Error('We could not send your enquiry. Please contact us directly.'))}
   });
  }
  if(googleEndpoint){enableLiveCopy('google');submit.disabled=false}
