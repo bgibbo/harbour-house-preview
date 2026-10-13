@@ -33,3 +33,7 @@ body:not(.guest-guide)>header{padding-top:6px;padding-bottom:6px}.header-crest{f
 /* Keep the fixed booking shortcut clear of the calendar and its controls. */
 @media(max-width:700px){body.availability-visible .mobile-cta{display:none!important}.calendar-day.in-stay{background:#b9dce2;color:var(--navy);font-weight:700;box-shadow:inset 0 0 0 1px var(--sea)}.calendar-day.selected{font-weight:700}}
 
+
+/* Floor plan section and complete-view treatment for the wide en-suite photograph. */
+.apartment-glance{display:grid;grid-template-columns:minmax(230px,.72fr) minmax(0,1.28fr);gap:48px;align-items:center;background:white}.apartment-glance-copy{max-width:460px}.apartment-glance-copy>p:not(.eyebrow){max-width:420px}.apartment-glance-plan{margin:0;max-width:100%;padding:12px;background:var(--paper);border:1px solid var(--line)}.apartment-glance-plan img{width:100%;height:auto;object-fit:contain}.apartment-glance-plan figcaption{font-size:13px;margin-top:8px;color:#5e747a}.gallery img.photo-contain{object-fit:contain;background:#e7eded}
+@media(max-width:700px){.apartment-glance{display:block}.apartment-glance-plan{margin-top:28px;padding:7px}}
