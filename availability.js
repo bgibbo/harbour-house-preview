@@ -18,6 +18,7 @@ function jsonp(url,prefix,timeoutMs=15000){
  return new Promise((resolve,reject)=>{
   const callbackName=prefix+(Math.random().toString(16).slice(2)+Math.random().toString(16).slice(2)+Date.now().toString(16)).slice(0,40);
   const script=document.createElement('script');let timer;
+  script.crossOrigin='anonymous';
   const clean=()=>{clearTimeout(timer);delete window[callbackName];script.remove()};
   window[callbackName]=payload=>{clean();resolve(payload)};
   script.onerror=()=>{clean();reject(Error('The availability service could not be reached.'))};
