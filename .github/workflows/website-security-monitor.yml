@@ -43,7 +43,7 @@ jobs:
           {
             echo '## Main source change audit'
             echo
-            echo "- Commit: `$COMMIT_SHA`"
+            printf -- '- Commit: `%s`\n' "$COMMIT_SHA"
             echo "- Author: $author"
             echo "- Commit time: $committed_at"
             echo
