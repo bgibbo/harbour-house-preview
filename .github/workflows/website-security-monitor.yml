@@ -1,0 +1,77 @@
+name: Website security monitor
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-change-audit:
+    name: Record main source changes
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record commit metadata and changed files
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          author="$(git show -s --format='%an <%ae>' "$COMMIT_SHA")"
+          committed_at="$(git show -s --format='%cI' "$COMMIT_SHA")"
+
+          if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+            changed="$(git ls-tree -r --name-only "$COMMIT_SHA" | sed 's/^/A\t/')"
+          else
+            changed="$(git diff --name-status "$BEFORE_SHA" "$COMMIT_SHA")"
+          fi
+
+          important="$(printf '%s\n' "$changed" | grep -E '(^|[[:space:]/])(index\.html|style\.css|app\.js|availability\.js|enquiry-config\.js|guest-guide\.html|guest-guide\.css)$|\.(m?js|cjs|ts|tsx|json|ya?ml|toml|sh|ps1|py)$' || true)"
+
+          {
+            echo '## Main source change audit'
+            echo
+            echo "- Commit: `$COMMIT_SHA`"
+            echo "- Author: $author"
+            echo "- Commit time: $committed_at"
+            echo
+            echo '### Files changed'
+            echo '```text'
+            if [[ -n "$changed" ]]; then printf '%s\n' "$changed"; else echo '(no file changes reported)'; fi
+            echo '```'
+            echo
+            echo '### Website, executable, and configuration files to review'
+            echo '```text'
+            if [[ -n "$important" ]]; then printf '%s\n' "$important"; else echo '(none)'; fi
+            echo '```'
+            echo
+            echo 'A listed change is an audit signal, not a claim that the change is malicious. Review it against the commit and expected release.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Commit: $COMMIT_SHA"
+          echo "Author: $author"
+          echo "Commit time: $committed_at"
+          echo 'Changed files:'
+          printf '%s\n' "$changed"
+          echo 'Website/executable/configuration files to review:'
+          printf '%s\n' "$important"
+
+  live-site-integrity:
+    name: Check the public website and its local assets
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check site content and local JavaScript/CSS
+        run: python3 scripts/check-live-site.py
